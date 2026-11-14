@@ -3,6 +3,7 @@
 #include "process.skel.h"
 #include "events.h"
 #include "json.h"
+#include <bpf/libbpf.h>
 #include <cjson/cJSON.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -68,7 +69,7 @@ void *process_run(void *arg) {
     }
     fprintf(stderr, "'handle_exec' has been attached to tracepoint\n");
        
-    struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), process_handle_event, NULL, NULL);
+    struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), process_handle_event, NULL, NULL); 
     if (!rb) {
         fprintf(stderr, "Unable to access ringbuf\n");
         process_bpf__destroy(skel);
@@ -88,12 +89,33 @@ void *process_run(void *arg) {
         }
     }
     ring_buffer__free(rb);
+    process_bpf__detach(skel);
 
+    __u32 key = 0;
+    __u64 err_counter;
+    if (bpf_map__lookup_elem(skel->maps.stats, &key, sizeof(key), &err_counter ,sizeof(err_counter), 0) != 0) {
+        fprintf(stderr, "Unable to read the number of event errors");
+        failed = true;
+    }
+    else {
+        char *json = count_of_errwr_to_rb(err_counter);
+        if (!json) {
+            fprintf(stderr, "JSON serialization error\n");
+            process_bpf__destroy(skel);
+            ctx->result = EXIT_FAILURE;
+            atomic_store(&ctx->finished, true);
+            return NULL;
+        }
+        int result = puts(json);
+        cJSON_free(json);
+        if (result < 0 ) { failed = true; }
+    }
+    
     fprintf(stderr, "Normal termination the collector\n");
     process_bpf__destroy(skel);
     if (failed) { ctx->result = EXIT_FAILURE; }
     else { ctx->result = EXIT_SUCCESS; }
-    atomic_store(&ctx->finished ,true);
+    atomic_store(&ctx->finished, true);
     return NULL;
 }
 

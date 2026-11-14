@@ -8,9 +8,9 @@
 #include <signal.h>
 #include <errno.h>
 #include <time.h>
+#include <linux/types.h>
 #include "collector.h"
 #include "process.h"
-
 
 int main (void) {
     sigset_t signals;

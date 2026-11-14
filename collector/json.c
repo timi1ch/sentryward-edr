@@ -52,3 +52,15 @@ char *process_event_to_json(const struct event *event) {
     cJSON_Delete(root);
     return json;
 }
+
+char *count_of_errwr_to_rb(__u64 cnt) {
+    char cnt_as_str[21];
+    int length = snprintf(cnt_as_str, sizeof(cnt_as_str), "%llu", cnt);
+    if (length <= 0) { return NULL; }
+    cJSON *root = cJSON_CreateObject();
+    if (!root) { return NULL; }
+    if (!cJSON_AddStringToObject(root, "errors", cnt_as_str)) { cJSON_Delete(root); return NULL; }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
