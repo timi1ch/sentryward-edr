@@ -2,9 +2,11 @@
 #include "process.h"
 #include "process.skel.h"
 #include "events.h"
+#include "transport.h"
 #include "json.h"
 #include <bpf/libbpf.h>
 #include <cjson/cJSON.h>
+#include <linux/bpf.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -15,7 +17,9 @@
 #include <inttypes.h>
 
 static int process_handle_event(void *ctx, void *data, size_t size) {
-    (void)ctx;
+    int fd = *(int *)ctx;
+    int result;
+
     if (size != sizeof(struct event)) {
         fprintf(stderr, "Unexpected event size: %zu, expected: %zu\n", size, sizeof(struct event));    
         return 0;
@@ -27,9 +31,9 @@ static int process_handle_event(void *ctx, void *data, size_t size) {
            fprintf(stderr, "JSON serialization error\n");
            return -EIO;
        }
-       int result = puts(json);
+       result = send_json_message(fd, json);
        cJSON_free(json);
-       if (result < 0 ) { return -EIO; }
+       if (result < 0 ) { return result; }
     }
     else {
         fprintf(stderr, "Unknown record type: %u\n", event->type);
@@ -39,7 +43,6 @@ static int process_handle_event(void *ctx, void *data, size_t size) {
 
 void *process_run(void *arg) {  
     struct process_context *ctx = arg;
-
     struct process_bpf *skel = process_bpf__open();
     if (!skel) {
         perror("Error opening the process.bpf object");
@@ -59,9 +62,20 @@ void *process_run(void *arg) {
     }
     fprintf(stderr, "process.bpf object has been loaded into the kernel\n");
     
+    const char *client_path = "/run/sentryward/process.bpf";
+    int fd = socket_open(client_path);
+    if (fd < 0) {
+        process_bpf__destroy(skel);
+        ctx->result = EXIT_FAILURE;
+        atomic_store(&ctx->finished, true);
+        fprintf(stderr, "%s", strerror(-fd));
+        return NULL;
+    }
+
     err = process_bpf__attach(skel);
     if (err != 0) {
         fprintf(stderr, "Error attaching 'handle_exec' program to tracepoint: %s\n", strerror(-err));
+        socket_close(fd, client_path);
         process_bpf__destroy(skel);
         ctx->result = EXIT_FAILURE;
         atomic_store(&ctx->finished, true);
@@ -69,9 +83,11 @@ void *process_run(void *arg) {
     }
     fprintf(stderr, "'handle_exec' has been attached to tracepoint\n");
        
-    struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), process_handle_event, NULL, NULL); 
+    struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), process_handle_event, &fd, NULL);
+    
     if (!rb) {
         fprintf(stderr, "Unable to access ringbuf\n");
+        socket_close(fd, client_path);
         process_bpf__destroy(skel);
         ctx->result = EXIT_FAILURE;
         atomic_store(&ctx->finished, true);
@@ -79,11 +95,12 @@ void *process_run(void *arg) {
     }
 
     bool failed = false;
+
     while(!atomic_load(&ctx->collector->stop_requested)) {
         err = ring_buffer__poll(rb, 200);
         if (err == -EINTR) { continue; }
         if (err < 0 ) {
-            fprintf(stderr, "Ringbuf read error: %s\n", strerror(-err));
+            fprintf(stderr, "Ringbuf read error: %s\n", strerror(-err)); 
             failed = true;
             break;
         }
@@ -101,6 +118,7 @@ void *process_run(void *arg) {
         char *json = count_of_errwr_to_rb(err_counter);
         if (!json) {
             fprintf(stderr, "JSON serialization error\n");
+            socket_close(fd, client_path);
             process_bpf__destroy(skel);
             ctx->result = EXIT_FAILURE;
             atomic_store(&ctx->finished, true);
@@ -112,6 +130,7 @@ void *process_run(void *arg) {
     }
     
     fprintf(stderr, "Normal termination the collector\n");
+    socket_close(fd, client_path);
     process_bpf__destroy(skel);
     if (failed) { ctx->result = EXIT_FAILURE; }
     else { ctx->result = EXIT_SUCCESS; }

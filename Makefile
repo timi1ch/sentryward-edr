@@ -18,13 +18,15 @@ COLLECTOR = $(GENERATED_DIR)/collector
 COLLECTOR_SOURCES = \
 	collector/main.c \
 	collector/process.c \
-	collector/json.c
+	collector/json.c \
+	collector/transport.c
 
 COLLECTOR_HEADERS = \
 	includes/collector.h \
 	includes/process.h \
 	includes/events.h \
-	includes/json.h
+	includes/json.h \
+	includes/transport.h
 
 # Build rules
 .PHONY: all
